@@ -85,6 +85,7 @@ jobs:
           sudo apt install -y datadog-security-cli
 
       - name: Validate Datadog secrets
+        id: dd_prep
         run: |
           if [ -z "${DD_API_KEY}" ]; then
             echo "DD_API_KEY is empty or missing."
@@ -94,9 +95,34 @@ jobs:
             echo "DD_APP_KEY is empty or missing."
             exit 1
           fi
-          if [ -z "${DD_SITE}" ]; then
-            echo "DD_SITE not set. Falling back to datadoghq.com"
-            echo "DD_SITE=datadoghq.com" >> "$GITHUB_ENV"
+          EFFECTIVE_SITE="${DD_SITE}"
+          if [ -z "${EFFECTIVE_SITE}" ]; then
+            EFFECTIVE_SITE="datadoghq.com"
+          fi
+          EFFECTIVE_SITE="${EFFECTIVE_SITE#https://}"
+          EFFECTIVE_SITE="${EFFECTIVE_SITE#http://}"
+          EFFECTIVE_SITE="${EFFECTIVE_SITE%/}"
+          echo "Using DD_SITE=${EFFECTIVE_SITE}"
+          echo "DD_SITE=${EFFECTIVE_SITE}" >> "$GITHUB_ENV"
+          echo "site=${EFFECTIVE_SITE}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Datadog credentials against API
+        run: |
+          API_BASE="https://api.${{ steps.dd_prep.outputs.site }}"
+          API_STATUS="$(curl -sS -o /tmp/dd_api_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" "${API_BASE}/api/v1/validate")"
+          if [ "${API_STATUS}" != "200" ]; then
+            echo "Datadog API key validation failed (status ${API_STATUS}) at ${API_BASE}."
+            echo "Check DD_API_KEY and DD_SITE."
+            cat /tmp/dd_api_validate.json
+            exit 1
+          fi
+
+          APP_STATUS="$(curl -sS -o /tmp/dd_app_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APP_KEY}" "${API_BASE}/api/v2/current_user")"
+          if [ "${APP_STATUS}" != "200" ]; then
+            echo "Datadog application key validation failed (status ${APP_STATUS}) at ${API_BASE}."
+            echo "Check DD_APP_KEY, DD_SITE, and ensure the app key has appsec_vm_read scope."
+            cat /tmp/dd_app_validate.json
+            exit 1
           fi
 
       - name: Scan image and upload report to Datadog
