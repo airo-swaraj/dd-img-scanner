@@ -45,9 +45,11 @@ jobs:
           CLEAN_USERNAME="$(echo "${DOCKERHUB_USERNAME}" | tr -d '[:space:]')"
           IMAGE="${CLEAN_USERNAME}/${IMAGE_NAME}"
           SHORT_SHA="${GITHUB_SHA::7}"
+          FULL_SHA="${GITHUB_SHA}"
           echo "username=${CLEAN_USERNAME}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "full_sha_tag=${FULL_SHA}" >> "$GITHUB_OUTPUT"
           echo "Publishing image: ${IMAGE}"
 
       - name: Set up Docker Buildx
@@ -71,9 +73,18 @@ jobs:
           tags: |
             ${{ steps.prep.outputs.image }}:latest
             ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}
+            ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha_tag }}
 
       - name: Pull image for Datadog scan
         run: docker pull "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+
+      - name: Capture image digest metadata
+        id: image_meta
+        run: |
+          IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+          DIGEST_REF="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
 
       - name: Install Datadog Security CLI
         run: |
@@ -138,9 +149,10 @@ jobs:
       - name: Scan image and upload report to Datadog
         run: |
           IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+          REPORT_FILE="datadog-scan-${GITHUB_SHA}.json"
           for attempt in 1 2 3; do
             echo "Datadog scan attempt ${attempt} for ${IMAGE_REF}"
-            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile; then
+            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile --output json | tee "${REPORT_FILE}"; then
               exit 0
             fi
             if [ "${attempt}" -lt 3 ]; then
@@ -150,3 +162,27 @@ jobs:
           done
           echo "Datadog scan failed after retries. Check DD_SITE, DD_API_KEY, DD_APP_KEY, and app key scope appsec_vm_read."
           exit 1
+
+      - name: Upload Datadog scan report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: datadog-scan-${{ github.sha }}
+          path: datadog-scan-${{ github.sha }}.json
+          if-no-files-found: warn
+
+      - name: Publish commit mapping summary
+        if: always()
+        run: |
+          {
+            echo "## Commit to Image Mapping"
+            echo ""
+            echo "- Commit SHA: ${{ github.sha }}"
+            echo "- Short SHA Tag: ${{ steps.prep.outputs.sha_tag }}"
+            echo "- Image Tag (short): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+            echo "- Image Tag (full): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha_tag }}"
+            echo "- Image Digest: ${{ steps.image_meta.outputs.digest_ref }}"
+            echo "- Datadog Site: ${{ steps.dd_prep.outputs.site }}"
+            echo ""
+            echo "Use commit SHA or image digest above to search findings in Datadog Cloud Security Vulnerabilities."
+          } >> "$GITHUB_STEP_SUMMARY"
