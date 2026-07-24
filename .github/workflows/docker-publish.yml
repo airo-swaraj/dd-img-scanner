@@ -175,7 +175,7 @@ jobs:
           REPORT_FILE="datadog-scan-${GITHUB_SHA}.json"
           for attempt in 1 2 3; do
             echo "Datadog scan attempt ${attempt} for ${IMAGE_REF}"
-            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json | tee "${REPORT_FILE}"; then
+            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json --tag git.commit.sha:${GITHUB_SHA} --tag git.commit.short:${GITHUB_SHA::7} --tag ci.provider:github-actions --tag ci.run_id:${GITHUB_RUN_ID} --tag ci.run_attempt:${GITHUB_RUN_ATTEMPT} | tee "${REPORT_FILE}"; then
               exit 0
             fi
             if [ "${attempt}" -lt 3 ]; then
