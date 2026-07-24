@@ -102,6 +102,16 @@ jobs:
           EFFECTIVE_SITE="${EFFECTIVE_SITE#https://}"
           EFFECTIVE_SITE="${EFFECTIVE_SITE#http://}"
           EFFECTIVE_SITE="${EFFECTIVE_SITE%/}"
+
+          # Convert common UI hostnames to DD_SITE values expected by APIs/CLI.
+          if [ "${EFFECTIVE_SITE}" = "app.datadoghq.com" ]; then
+            EFFECTIVE_SITE="datadoghq.com"
+          elif [ "${EFFECTIVE_SITE}" = "app.datadoghq.eu" ]; then
+            EFFECTIVE_SITE="datadoghq.eu"
+          elif [ "${EFFECTIVE_SITE}" = "app.ddog-gov.com" ]; then
+            EFFECTIVE_SITE="ddog-gov.com"
+          fi
+
           echo "Using DD_SITE=${EFFECTIVE_SITE}"
           echo "DD_SITE=${EFFECTIVE_SITE}" >> "$GITHUB_ENV"
           echo "site=${EFFECTIVE_SITE}" >> "$GITHUB_OUTPUT"
@@ -127,4 +137,16 @@ jobs:
 
       - name: Scan image and upload report to Datadog
         run: |
-          datadog-security-cli image "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}" --dockerfile ./Dockerfile
+          IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+          for attempt in 1 2 3; do
+            echo "Datadog scan attempt ${attempt} for ${IMAGE_REF}"
+            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "Scan failed, retrying after key propagation wait..."
+              sleep 20
+            fi
+          done
+          echo "Datadog scan failed after retries. Check DD_SITE, DD_API_KEY, DD_APP_KEY, and app key scope appsec_vm_read."
+          exit 1
