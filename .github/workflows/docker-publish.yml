@@ -15,6 +15,9 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
+      DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+      DD_SITE: ${{ secrets.DD_SITE }}
 
     permissions:
       contents: read
@@ -61,6 +64,41 @@ jobs:
         with:
           context: .
           push: true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.datadoghq.image.source_path=Dockerfile
           tags: |
             ${{ steps.prep.outputs.image }}:latest
             ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}
+
+      - name: Pull image for Datadog scan
+        run: docker pull "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
+
+      - name: Install Datadog Security CLI
+        run: |
+          DD_APT_KEY_URL="https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public"
+          curl -fsSL "$DD_APT_KEY_URL" | sudo gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable datadog-security-cli" \
+          | sudo tee /etc/apt/sources.list.d/datadog-security-cli.list
+          sudo apt update
+          sudo apt install -y datadog-security-cli
+
+      - name: Validate Datadog secrets
+        run: |
+          if [ -z "${DD_API_KEY}" ]; then
+            echo "DD_API_KEY is empty or missing."
+            exit 1
+          fi
+          if [ -z "${DD_APP_KEY}" ]; then
+            echo "DD_APP_KEY is empty or missing."
+            exit 1
+          fi
+          if [ -z "${DD_SITE}" ]; then
+            echo "DD_SITE not set. Falling back to datadoghq.com"
+            echo "DD_SITE=datadoghq.com" >> "$GITHUB_ENV"
+          fi
+
+      - name: Scan image and upload report to Datadog
+        run: |
+          datadog-security-cli image "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}" --dockerfile ./Dockerfile
