@@ -170,11 +170,12 @@ jobs:
 
       - name: Scan image and upload report to Datadog
         run: |
+          set -o pipefail
           IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
           REPORT_FILE="datadog-scan-${GITHUB_SHA}.json"
           for attempt in 1 2 3; do
             echo "Datadog scan attempt ${attempt} for ${IMAGE_REF}"
-            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile --output json | tee "${REPORT_FILE}"; then
+            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json | tee "${REPORT_FILE}"; then
               exit 0
             fi
             if [ "${attempt}" -lt 3 ]; then
