@@ -26,39 +26,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build, push, scan, and publish digest
+      - name: Prepare image references
+        id: prep
         run: |
           set -euo pipefail
-
           CLEAN_USERNAME="$(echo "${DOCKERHUB_USERNAME}" | tr -d '[:space:]')"
           if [ -z "${CLEAN_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
             echo "DOCKERHUB_USERNAME or DOCKERHUB_TOKEN is missing."
             exit 1
           fi
-          if [ -z "${DD_API_KEY}" ] || [ -z "${DD_APP_KEY}" ]; then
-            echo "DD_API_KEY or DD_APP_KEY is missing."
-            exit 1
-          fi
-
-          EFFECTIVE_SITE="${DD_SITE:-datadoghq.com}"
-          EFFECTIVE_SITE="${EFFECTIVE_SITE#https://}"
-          EFFECTIVE_SITE="${EFFECTIVE_SITE#http://}"
-          EFFECTIVE_SITE="${EFFECTIVE_SITE%/}"
-          if [ "${EFFECTIVE_SITE}" = "app.datadoghq.com" ]; then
-            EFFECTIVE_SITE="datadoghq.com"
-          elif [ "${EFFECTIVE_SITE}" = "app.datadoghq.eu" ]; then
-            EFFECTIVE_SITE="datadoghq.eu"
-          elif [ "${EFFECTIVE_SITE}" = "app.ddog-gov.com" ]; then
-            EFFECTIVE_SITE="ddog-gov.com"
-          fi
 
           IMAGE="${CLEAN_USERNAME}/${IMAGE_NAME}"
           SHORT_SHA="${GITHUB_SHA::7}"
           FULL_SHA="${GITHUB_SHA}"
-          IMAGE_REF="${IMAGE}:${SHORT_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "full_sha=${FULL_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${IMAGE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
+      - name: Login to Docker Hub
+        run: |
+          set -euo pipefail
           echo "${DOCKERHUB_TOKEN}" | docker login -u "${CLEAN_USERNAME}" --password-stdin
 
+      - name: Build and push image
+        run: |
+          set -euo pipefail
           docker buildx build \
             --push \
             --annotation "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
@@ -67,48 +60,17 @@ jobs:
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "com.datadoghq.image.source_path=Dockerfile" \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:${SHORT_SHA}" \
-            -t "${IMAGE}:${FULL_SHA}" \
+            -t "${{ steps.prep.outputs.image }}:latest" \
+            -t "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.short_sha }}" \
+            -t "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha }}" \
             .
 
-          docker pull "${IMAGE_REF}"
-          RUNTIME_REPO_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
-          RUNTIME_DIGEST="${RUNTIME_REPO_DIGEST#*@}"
-
-          DD_APT_KEY_URL="https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public"
-          curl -fsSL "$DD_APT_KEY_URL" | sudo gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable datadog-security-cli" \
-          | sudo tee /etc/apt/sources.list.d/datadog-security-cli.list
-          sudo apt update
-          sudo apt install -y datadog-security-cli
-
-          API_BASE="https://api.${EFFECTIVE_SITE}"
-          API_STATUS="$(curl -sS -o /tmp/dd_api_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" "${API_BASE}/api/v1/validate")"
-          if [ "${API_STATUS}" != "200" ]; then
-            cat /tmp/dd_api_validate.json
-            exit 1
-          fi
-
-          APP_STATUS="$(curl -sS -o /tmp/dd_app_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APP_KEY}" "${API_BASE}/api/v2/validate_keys")"
-          if [ "${APP_STATUS}" != "200" ]; then
-            cat /tmp/dd_app_validate.json
-            exit 1
-          fi
-
-          export DD_SITE="${EFFECTIVE_SITE}"
-          for attempt in 1 2 3; do
-            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json --tag git.commit.sha:${GITHUB_SHA} --tag git.commit.short:${SHORT_SHA} --tag ci.provider:github-actions --tag ci.run_id:${GITHUB_RUN_ID} --tag ci.run_attempt:${GITHUB_RUN_ATTEMPT}; then
-              break
-            fi
-            if [ "${attempt}" -eq 3 ]; then
-              exit 1
-            fi
-            sleep 20
-          done
-
-          {
-            echo "## Datadog Digest"
-            echo ""
-            echo "- Image Digest (Datadog match key): ${RUNTIME_DIGEST}"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Datadog image scan
+        uses: ./.github/actions/datadog-image-scan
+        with:
+          image_ref: ${{ steps.prep.outputs.image_ref }}
+          dockerfile_path: ./Dockerfile
+          commit_sha: ${{ github.sha }}
+          short_sha: ${{ steps.prep.outputs.short_sha }}
+          run_id: ${{ github.run_id }}
+          run_attempt: ${{ github.run_attempt }}

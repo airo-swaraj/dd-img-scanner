@@ -1,0 +1,91 @@
+name: Datadog Image Scan
+description: Pull image, run Datadog security scan, and publish Datadog match digest.
+inputs:
+  image_ref:
+    description: Fully qualified image reference to scan (for example org/app:tag).
+    required: true
+  dockerfile_path:
+    description: Path to Dockerfile used for metadata linking.
+    required: false
+    default: ./Dockerfile
+  commit_sha:
+    description: Git commit SHA for tagging.
+    required: true
+  short_sha:
+    description: Short git SHA for tagging.
+    required: true
+  run_id:
+    description: GitHub run id for tagging.
+    required: true
+  run_attempt:
+    description: GitHub run attempt for tagging.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Scan image with Datadog
+      shell: bash
+      env:
+        DD_API_KEY: ${{ env.DD_API_KEY }}
+        DD_APP_KEY: ${{ env.DD_APP_KEY }}
+        DD_SITE: ${{ env.DD_SITE }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${DD_API_KEY:-}" ] || [ -z "${DD_APP_KEY:-}" ]; then
+          echo "DD_API_KEY or DD_APP_KEY is missing."
+          exit 1
+        fi
+
+        EFFECTIVE_SITE="${DD_SITE:-datadoghq.com}"
+        EFFECTIVE_SITE="${EFFECTIVE_SITE#https://}"
+        EFFECTIVE_SITE="${EFFECTIVE_SITE#http://}"
+        EFFECTIVE_SITE="${EFFECTIVE_SITE%/}"
+        if [ "${EFFECTIVE_SITE}" = "app.datadoghq.com" ]; then
+          EFFECTIVE_SITE="datadoghq.com"
+        elif [ "${EFFECTIVE_SITE}" = "app.datadoghq.eu" ]; then
+          EFFECTIVE_SITE="datadoghq.eu"
+        elif [ "${EFFECTIVE_SITE}" = "app.ddog-gov.com" ]; then
+          EFFECTIVE_SITE="ddog-gov.com"
+        fi
+
+        docker pull "${{ inputs.image_ref }}"
+        RUNTIME_REPO_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "${{ inputs.image_ref }}")"
+        RUNTIME_DIGEST="${RUNTIME_REPO_DIGEST#*@}"
+
+        DD_APT_KEY_URL="https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public"
+        curl -fsSL "$DD_APT_KEY_URL" | sudo gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable datadog-security-cli" \
+        | sudo tee /etc/apt/sources.list.d/datadog-security-cli.list
+        sudo apt update
+        sudo apt install -y datadog-security-cli
+
+        API_BASE="https://api.${EFFECTIVE_SITE}"
+        API_STATUS="$(curl -sS -o /tmp/dd_api_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" "${API_BASE}/api/v1/validate")"
+        if [ "${API_STATUS}" != "200" ]; then
+          cat /tmp/dd_api_validate.json
+          exit 1
+        fi
+
+        APP_STATUS="$(curl -sS -o /tmp/dd_app_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APP_KEY}" "${API_BASE}/api/v2/validate_keys")"
+        if [ "${APP_STATUS}" != "200" ]; then
+          cat /tmp/dd_app_validate.json
+          exit 1
+        fi
+
+        export DD_SITE="${EFFECTIVE_SITE}"
+        for attempt in 1 2 3; do
+          if datadog-security-cli image "${{ inputs.image_ref }}" --dockerfile "${{ inputs.dockerfile_path }}" -o json --tag git.commit.sha:${{ inputs.commit_sha }} --tag git.commit.short:${{ inputs.short_sha }} --tag ci.provider:github-actions --tag ci.run_id:${{ inputs.run_id }} --tag ci.run_attempt:${{ inputs.run_attempt }}; then
+            break
+          fi
+          if [ "${attempt}" -eq 3 ]; then
+            exit 1
+          fi
+          sleep 20
+        done
+
+        {
+          echo "## Datadog Digest"
+          echo ""
+          echo "- Image Digest (Datadog match key): ${RUNTIME_DIGEST}"
+        } >> "$GITHUB_STEP_SUMMARY"
