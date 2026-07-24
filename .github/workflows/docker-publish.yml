@@ -26,117 +26,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate Docker Hub secrets
+      - name: Build, push, scan, and publish digest
         run: |
+          set -euo pipefail
+
           CLEAN_USERNAME="$(echo "${DOCKERHUB_USERNAME}" | tr -d '[:space:]')"
-          if [ -z "${CLEAN_USERNAME}" ]; then
-            echo "DOCKERHUB_USERNAME is empty or missing."
-            echo "Set Actions secret DOCKERHUB_USERNAME to your Docker Hub username (for example: airo-swaraj)."
+          if [ -z "${CLEAN_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "DOCKERHUB_USERNAME or DOCKERHUB_TOKEN is missing."
             exit 1
           fi
-          if [ -z "${DOCKERHUB_TOKEN}" ]; then
-            echo "DOCKERHUB_TOKEN is empty or missing."
+          if [ -z "${DD_API_KEY}" ] || [ -z "${DD_APP_KEY}" ]; then
+            echo "DD_API_KEY or DD_APP_KEY is missing."
             exit 1
           fi
 
-      - name: Prepare image tags
-        id: prep
-        run: |
-          CLEAN_USERNAME="$(echo "${DOCKERHUB_USERNAME}" | tr -d '[:space:]')"
-          IMAGE="${CLEAN_USERNAME}/${IMAGE_NAME}"
-          SHORT_SHA="${GITHUB_SHA::7}"
-          FULL_SHA="${GITHUB_SHA}"
-          echo "username=${CLEAN_USERNAME}" >> "$GITHUB_OUTPUT"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "full_sha_tag=${FULL_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Publishing image: ${IMAGE}"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ steps.prep.outputs.username }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        id: buildpush
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          annotations: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            com.datadoghq.image.source_path=Dockerfile
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            com.datadoghq.image.source_path=Dockerfile
-          tags: |
-            ${{ steps.prep.outputs.image }}:latest
-            ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}
-            ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha_tag }}
-
-      - name: Pull image for Datadog scan
-        run: docker pull "${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
-
-      - name: Capture image digest metadata
-        id: image_meta
-        run: |
-          IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
-          BUILD_DIGEST="${{ steps.buildpush.outputs.digest }}"
-
-          # Build action digest can be a multi-arch index digest. Datadog usually
-          # reports the pulled runtime image digest for the platform scanned.
-          RUNTIME_REPO_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}" 2>/dev/null || true)"
-          RUNTIME_DIGEST="${RUNTIME_REPO_DIGEST#*@}"
-
-          if [ -n "${RUNTIME_REPO_DIGEST}" ]; then
-            DIGEST_REF="${RUNTIME_REPO_DIGEST}"
-          elif [ -n "${BUILD_DIGEST}" ]; then
-            DIGEST_REF="${{ steps.prep.outputs.image }}@${BUILD_DIGEST}"
-          else
-            DIGEST_REF=""
-          fi
-
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-          echo "digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
-          echo "build_index_digest=${BUILD_DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "runtime_repo_digest=${RUNTIME_REPO_DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "runtime_digest=${RUNTIME_DIGEST}" >> "$GITHUB_OUTPUT"
-
-      - name: Install Datadog Security CLI
-        run: |
-          DD_APT_KEY_URL="https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public"
-          curl -fsSL "$DD_APT_KEY_URL" | sudo gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable datadog-security-cli" \
-          | sudo tee /etc/apt/sources.list.d/datadog-security-cli.list
-          sudo apt update
-          sudo apt install -y datadog-security-cli
-
-      - name: Validate Datadog secrets
-        id: dd_prep
-        run: |
-          if [ -z "${DD_API_KEY}" ]; then
-            echo "DD_API_KEY is empty or missing."
-            exit 1
-          fi
-          if [ -z "${DD_APP_KEY}" ]; then
-            echo "DD_APP_KEY is empty or missing."
-            exit 1
-          fi
-          EFFECTIVE_SITE="${DD_SITE}"
-          if [ -z "${EFFECTIVE_SITE}" ]; then
-            EFFECTIVE_SITE="datadoghq.com"
-          fi
+          EFFECTIVE_SITE="${DD_SITE:-datadoghq.com}"
           EFFECTIVE_SITE="${EFFECTIVE_SITE#https://}"
           EFFECTIVE_SITE="${EFFECTIVE_SITE#http://}"
           EFFECTIVE_SITE="${EFFECTIVE_SITE%/}"
-
-          # Convert common UI hostnames to DD_SITE values expected by APIs/CLI.
           if [ "${EFFECTIVE_SITE}" = "app.datadoghq.com" ]; then
             EFFECTIVE_SITE="datadoghq.com"
           elif [ "${EFFECTIVE_SITE}" = "app.datadoghq.eu" ]; then
@@ -145,162 +52,63 @@ jobs:
             EFFECTIVE_SITE="ddog-gov.com"
           fi
 
-          echo "Using DD_SITE=${EFFECTIVE_SITE}"
-          echo "DD_SITE=${EFFECTIVE_SITE}" >> "$GITHUB_ENV"
-          echo "site=${EFFECTIVE_SITE}" >> "$GITHUB_OUTPUT"
+          IMAGE="${CLEAN_USERNAME}/${IMAGE_NAME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          FULL_SHA="${GITHUB_SHA}"
+          IMAGE_REF="${IMAGE}:${SHORT_SHA}"
 
-      - name: Validate Datadog credentials against API
-        run: |
-          API_BASE="https://api.${{ steps.dd_prep.outputs.site }}"
+          echo "${DOCKERHUB_TOKEN}" | docker login -u "${CLEAN_USERNAME}" --password-stdin
+
+          docker buildx build \
+            --push \
+            --annotation "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --annotation "com.datadoghq.image.source_path=Dockerfile" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "com.datadoghq.image.source_path=Dockerfile" \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${SHORT_SHA}" \
+            -t "${IMAGE}:${FULL_SHA}" \
+            .
+
+          docker pull "${IMAGE_REF}"
+          RUNTIME_REPO_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
+          RUNTIME_DIGEST="${RUNTIME_REPO_DIGEST#*@}"
+
+          DD_APT_KEY_URL="https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public"
+          curl -fsSL "$DD_APT_KEY_URL" | sudo gpg --dearmor -o /usr/share/keyrings/datadog-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable datadog-security-cli" \
+          | sudo tee /etc/apt/sources.list.d/datadog-security-cli.list
+          sudo apt update
+          sudo apt install -y datadog-security-cli
+
+          API_BASE="https://api.${EFFECTIVE_SITE}"
           API_STATUS="$(curl -sS -o /tmp/dd_api_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" "${API_BASE}/api/v1/validate")"
           if [ "${API_STATUS}" != "200" ]; then
-            echo "Datadog API key validation failed (status ${API_STATUS}) at ${API_BASE}."
-            echo "Check DD_API_KEY and DD_SITE."
             cat /tmp/dd_api_validate.json
             exit 1
           fi
 
           APP_STATUS="$(curl -sS -o /tmp/dd_app_validate.json -w '%{http_code}' -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APP_KEY}" "${API_BASE}/api/v2/validate_keys")"
           if [ "${APP_STATUS}" != "200" ]; then
-            echo "Datadog application key validation failed (status ${APP_STATUS}) at ${API_BASE}."
-            echo "Check DD_APP_KEY, DD_SITE, and ensure the app key has appsec_vm_read scope."
             cat /tmp/dd_app_validate.json
             exit 1
           fi
 
-      - name: Scan image and upload report to Datadog
-        run: |
-          set -o pipefail
-          IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
-          REPORT_FILE="datadog-scan-${GITHUB_SHA}.json"
+          export DD_SITE="${EFFECTIVE_SITE}"
           for attempt in 1 2 3; do
-            echo "Datadog scan attempt ${attempt} for ${IMAGE_REF}"
-            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json --tag git.commit.sha:${GITHUB_SHA} --tag git.commit.short:${GITHUB_SHA::7} --tag ci.provider:github-actions --tag ci.run_id:${GITHUB_RUN_ID} --tag ci.run_attempt:${GITHUB_RUN_ATTEMPT} | tee "${REPORT_FILE}"; then
-              exit 0
+            if datadog-security-cli image "${IMAGE_REF}" --dockerfile ./Dockerfile -o json --tag git.commit.sha:${GITHUB_SHA} --tag git.commit.short:${SHORT_SHA} --tag ci.provider:github-actions --tag ci.run_id:${GITHUB_RUN_ID} --tag ci.run_attempt:${GITHUB_RUN_ATTEMPT}; then
+              break
             fi
-            if [ "${attempt}" -lt 3 ]; then
-              echo "Scan failed, retrying after key propagation wait..."
-              sleep 20
+            if [ "${attempt}" -eq 3 ]; then
+              exit 1
             fi
+            sleep 20
           done
-          echo "Datadog scan failed after retries. Check DD_SITE, DD_API_KEY, DD_APP_KEY, and app key scope appsec_vm_read."
-          exit 1
 
-      - name: Upload Datadog scan report artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: datadog-scan-${{ github.sha }}
-          path: datadog-scan-${{ github.sha }}.json
-          if-no-files-found: warn
-
-      - name: Generate human-readable scan report
-        if: always()
-        run: |
-          JSON_FILE="datadog-scan-${GITHUB_SHA}.json"
-          MD_FILE="datadog-scan-${GITHUB_SHA}.md"
-
-          python3 - <<'PY'
-          import json
-          import os
-          from collections import Counter
-
-          sha = os.environ.get("GITHUB_SHA", "unknown")
-          json_file = f"datadog-scan-{sha}.json"
-          md_file = f"datadog-scan-{sha}.md"
-          image = os.environ.get("IMAGE_REF", "unknown")
-          digest = os.environ.get("IMAGE_DIGEST", "unknown")
-          site = os.environ.get("DD_SITE", "unknown")
-
-          lines = []
-          lines.append("# Datadog Image Scan Report")
-          lines.append("")
-          lines.append(f"- Commit SHA: {sha}")
-          lines.append(f"- Image Ref: {image}")
-          lines.append(f"- Image Digest: {digest}")
-          lines.append(f"- Datadog Site: {site}")
-          lines.append("")
-
-          if not os.path.exists(json_file):
-            lines.append("JSON scan output file not found for this run.")
-            with open(md_file, "w", encoding="utf-8") as f:
-              f.write("\n".join(lines) + "\n")
-            raise SystemExit(0)
-
-          try:
-            with open(json_file, "r", encoding="utf-8") as f:
-              data = json.load(f)
-          except Exception as exc:
-            lines.append(f"Could not parse JSON output: {exc}")
-            with open(md_file, "w", encoding="utf-8") as f:
-              f.write("\n".join(lines) + "\n")
-            raise SystemExit(0)
-
-          counters = Counter()
-
-          def walk(node):
-            if isinstance(node, dict):
-              severity = node.get("severity")
-              if isinstance(severity, str):
-                sev = severity.lower()
-                if sev in {"critical", "high", "medium", "low", "info"}:
-                  counters[sev] += 1
-              for value in node.values():
-                walk(value)
-            elif isinstance(node, list):
-              for item in node:
-                walk(item)
-
-          walk(data)
-
-          total = sum(counters.values())
-          lines.append(f"- Counted findings by severity in JSON: {total}")
-          lines.append(f"- Critical: {counters['critical']}")
-          lines.append(f"- High: {counters['high']}")
-          lines.append(f"- Medium: {counters['medium']}")
-          lines.append(f"- Low: {counters['low']}")
-          lines.append(f"- Info: {counters['info']}")
-          lines.append("")
-          lines.append("Note: Counts are derived from severity fields in the JSON output.")
-
-          with open(md_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-          PY
-        env:
-          IMAGE_REF: ${{ steps.image_meta.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ steps.image_meta.outputs.digest_ref }}
-
-      - name: Upload human-readable scan report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: datadog-scan-summary-${{ github.sha }}
-          path: datadog-scan-${{ github.sha }}.md
-          if-no-files-found: warn
-
-      - name: Publish commit mapping summary
-        if: always()
-        run: |
           {
             echo "## Datadog Digest"
             echo ""
-            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish image and digest quick summary
-        if: always()
-        run: |
-          {
-            echo "## Datadog Digest"
-            echo ""
-            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish Datadog quick links
-        if: always()
-        run: |
-          {
-            echo "## Datadog Digest"
-            echo ""
-            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
+            echo "- Image Digest (Datadog match key): ${RUNTIME_DIGEST}"
           } >> "$GITHUB_STEP_SUMMARY"
