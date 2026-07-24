@@ -175,7 +175,7 @@ jobs:
           path: datadog-scan-${{ github.sha }}.json
           if-no-files-found: warn
 
-        - name: Generate human-readable scan report
+      - name: Generate human-readable scan report
         if: always()
         run: |
           JSON_FILE="datadog-scan-${GITHUB_SHA}.json"
@@ -251,7 +251,7 @@ jobs:
           IMAGE_REF: ${{ steps.image_meta.outputs.image_ref }}
           IMAGE_DIGEST: ${{ steps.image_meta.outputs.digest_ref }}
 
-        - name: Upload human-readable scan report
+      - name: Upload human-readable scan report
         if: always()
         uses: actions/upload-artifact@v4
         with:
