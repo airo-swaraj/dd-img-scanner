@@ -6,7 +6,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Hello from DD-img-scanner running in Docker!\n")
+        self.wfile.write(b"Hello from DD-img-scanner running in Docker! Build marker: report-v2\n")
 
 
 if __name__ == "__main__":

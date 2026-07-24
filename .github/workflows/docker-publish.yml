@@ -175,6 +175,90 @@ jobs:
           path: datadog-scan-${{ github.sha }}.json
           if-no-files-found: warn
 
+        - name: Generate human-readable scan report
+        if: always()
+        run: |
+          JSON_FILE="datadog-scan-${GITHUB_SHA}.json"
+          MD_FILE="datadog-scan-${GITHUB_SHA}.md"
+
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          sha = os.environ.get("GITHUB_SHA", "unknown")
+          json_file = f"datadog-scan-{sha}.json"
+          md_file = f"datadog-scan-{sha}.md"
+          image = os.environ.get("IMAGE_REF", "unknown")
+          digest = os.environ.get("IMAGE_DIGEST", "unknown")
+          site = os.environ.get("DD_SITE", "unknown")
+
+          lines = []
+          lines.append("# Datadog Image Scan Report")
+          lines.append("")
+          lines.append(f"- Commit SHA: {sha}")
+          lines.append(f"- Image Ref: {image}")
+          lines.append(f"- Image Digest: {digest}")
+          lines.append(f"- Datadog Site: {site}")
+          lines.append("")
+
+          if not os.path.exists(json_file):
+            lines.append("JSON scan output file not found for this run.")
+            with open(md_file, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+            raise SystemExit(0)
+
+          try:
+            with open(json_file, "r", encoding="utf-8") as f:
+              data = json.load(f)
+          except Exception as exc:
+            lines.append(f"Could not parse JSON output: {exc}")
+            with open(md_file, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+            raise SystemExit(0)
+
+          counters = Counter()
+
+          def walk(node):
+            if isinstance(node, dict):
+              severity = node.get("severity")
+              if isinstance(severity, str):
+                sev = severity.lower()
+                if sev in {"critical", "high", "medium", "low", "info"}:
+                  counters[sev] += 1
+              for value in node.values():
+                walk(value)
+            elif isinstance(node, list):
+              for item in node:
+                walk(item)
+
+          walk(data)
+
+          total = sum(counters.values())
+          lines.append(f"- Counted findings by severity in JSON: {total}")
+          lines.append(f"- Critical: {counters['critical']}")
+          lines.append(f"- High: {counters['high']}")
+          lines.append(f"- Medium: {counters['medium']}")
+          lines.append(f"- Low: {counters['low']}")
+          lines.append(f"- Info: {counters['info']}")
+          lines.append("")
+          lines.append("Note: Counts are derived from severity fields in the JSON output.")
+
+          with open(md_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+          PY
+        env:
+          IMAGE_REF: ${{ steps.image_meta.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ steps.image_meta.outputs.digest_ref }}
+
+        - name: Upload human-readable scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: datadog-scan-summary-${{ github.sha }}
+          path: datadog-scan-${{ github.sha }}.md
+          if-no-files-found: warn
+
       - name: Publish commit mapping summary
         if: always()
         run: |
