@@ -62,6 +62,7 @@ jobs:
           password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        id: buildpush
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -86,7 +87,12 @@ jobs:
         id: image_meta
         run: |
           IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
-          DIGEST_REF="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
+          BUILD_DIGEST="${{ steps.buildpush.outputs.digest }}"
+          if [ -n "${BUILD_DIGEST}" ]; then
+            DIGEST_REF="${{ steps.prep.outputs.image }}@${BUILD_DIGEST}"
+          else
+            DIGEST_REF="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
+          fi
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
           echo "digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
 
@@ -273,4 +279,14 @@ jobs:
             echo "- Datadog Site: ${{ steps.dd_prep.outputs.site }}"
             echo ""
             echo "Use commit SHA or image digest above to search findings in Datadog Cloud Security Vulnerabilities."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish image and digest quick summary
+        if: always()
+        run: |
+          {
+            echo "## Image Digest Quick View"
+            echo ""
+            echo "- Image: ${{ steps.image_meta.outputs.image_ref }}"
+            echo "- Digest: ${{ steps.image_meta.outputs.digest_ref }}"
           } >> "$GITHUB_STEP_SUMMARY"
