@@ -282,58 +282,25 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Commit to Image Mapping"
+            echo "## Datadog Digest"
             echo ""
-            echo "- Commit SHA: ${{ github.sha }}"
-            echo "- Short SHA Tag: ${{ steps.prep.outputs.sha_tag }}"
-            echo "- Image Tag (short): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
-            echo "- Image Tag (full): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha_tag }}"
             echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
-            echo "- Runtime Repo Digest: ${{ steps.image_meta.outputs.runtime_repo_digest }}"
-            echo "- Build Index Digest: ${{ steps.image_meta.outputs.build_index_digest }}"
-            echo "- Datadog Site: ${{ steps.dd_prep.outputs.site }}"
-            echo ""
-            echo "Use Image Digest (Datadog match key) to search findings in Datadog Cloud Security Vulnerabilities."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish image and digest quick summary
         if: always()
         run: |
           {
-            echo "## Image Digest Quick View"
+            echo "## Datadog Digest"
             echo ""
-            echo "- Image: ${{ steps.image_meta.outputs.image_ref }}"
-            echo "- Datadog Match Digest: ${{ steps.image_meta.outputs.runtime_digest }}"
-            echo "- Runtime Repo Digest: ${{ steps.image_meta.outputs.runtime_repo_digest }}"
-            echo "- Build Index Digest: ${{ steps.image_meta.outputs.build_index_digest }}"
+            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish Datadog quick links
         if: always()
         run: |
-          SITE="${{ steps.dd_prep.outputs.site }}"
-          DIGEST_REF="${{ steps.image_meta.outputs.digest_ref }}"
-          COMMIT_SHA="${{ github.sha }}"
-
-          if [ "${SITE}" = "datadoghq.com" ]; then
-            APP_HOST="app.datadoghq.com"
-          elif [ "${SITE}" = "datadoghq.eu" ]; then
-            APP_HOST="app.datadoghq.eu"
-          elif [ "${SITE}" = "ddog-gov.com" ]; then
-            APP_HOST="app.ddog-gov.com"
-          else
-            APP_HOST="app.${SITE}"
-          fi
-
-          DIGEST_QUERY="${DIGEST_REF#*@}"
-          DIGEST_URL="https://${APP_HOST}/security/csm/vm?query=${DIGEST_QUERY}"
-          COMMIT_URL="https://${APP_HOST}/security/csm/vm?query=${COMMIT_SHA}"
-
           {
-            echo "## Datadog Verification Links"
+            echo "## Datadog Digest"
             echo ""
-            echo "- Digest lookup: ${DIGEST_URL}"
-            echo "- Commit lookup: ${COMMIT_URL}"
-            echo ""
-            echo "If the digest is not visible immediately, wait a few minutes and refresh (eventual consistency)."
+            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
           } >> "$GITHUB_STEP_SUMMARY"
