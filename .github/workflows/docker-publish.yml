@@ -88,13 +88,25 @@ jobs:
         run: |
           IMAGE_REF="${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
           BUILD_DIGEST="${{ steps.buildpush.outputs.digest }}"
-          if [ -n "${BUILD_DIGEST}" ]; then
+
+          # Build action digest can be a multi-arch index digest. Datadog usually
+          # reports the pulled runtime image digest for the platform scanned.
+          RUNTIME_REPO_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}" 2>/dev/null || true)"
+          RUNTIME_DIGEST="${RUNTIME_REPO_DIGEST#*@}"
+
+          if [ -n "${RUNTIME_REPO_DIGEST}" ]; then
+            DIGEST_REF="${RUNTIME_REPO_DIGEST}"
+          elif [ -n "${BUILD_DIGEST}" ]; then
             DIGEST_REF="${{ steps.prep.outputs.image }}@${BUILD_DIGEST}"
           else
-            DIGEST_REF="$(docker image inspect --format='{{index .RepoDigests 0}}' "${IMAGE_REF}")"
+            DIGEST_REF=""
           fi
+
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
           echo "digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
+          echo "build_index_digest=${BUILD_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "runtime_repo_digest=${RUNTIME_REPO_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "runtime_digest=${RUNTIME_DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Install Datadog Security CLI
         run: |
@@ -275,10 +287,12 @@ jobs:
             echo "- Short SHA Tag: ${{ steps.prep.outputs.sha_tag }}"
             echo "- Image Tag (short): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.sha_tag }}"
             echo "- Image Tag (full): ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.full_sha_tag }}"
-            echo "- Image Digest: ${{ steps.image_meta.outputs.digest_ref }}"
+            echo "- Image Digest (Datadog match key): ${{ steps.image_meta.outputs.runtime_digest }}"
+            echo "- Runtime Repo Digest: ${{ steps.image_meta.outputs.runtime_repo_digest }}"
+            echo "- Build Index Digest: ${{ steps.image_meta.outputs.build_index_digest }}"
             echo "- Datadog Site: ${{ steps.dd_prep.outputs.site }}"
             echo ""
-            echo "Use commit SHA or image digest above to search findings in Datadog Cloud Security Vulnerabilities."
+            echo "Use Image Digest (Datadog match key) to search findings in Datadog Cloud Security Vulnerabilities."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish image and digest quick summary
@@ -288,7 +302,9 @@ jobs:
             echo "## Image Digest Quick View"
             echo ""
             echo "- Image: ${{ steps.image_meta.outputs.image_ref }}"
-            echo "- Digest: ${{ steps.image_meta.outputs.digest_ref }}"
+            echo "- Datadog Match Digest: ${{ steps.image_meta.outputs.runtime_digest }}"
+            echo "- Runtime Repo Digest: ${{ steps.image_meta.outputs.runtime_repo_digest }}"
+            echo "- Build Index Digest: ${{ steps.image_meta.outputs.build_index_digest }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish Datadog quick links
